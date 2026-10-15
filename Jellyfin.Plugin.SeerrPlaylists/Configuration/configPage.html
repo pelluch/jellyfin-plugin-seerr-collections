@@ -9,6 +9,28 @@
         <div data-role="content">
             <div class="content-primary">
                 <form id="SeerrPlaylistsConfigForm">
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="SeerrUrl">Seerr URL</label>
+                        <input id="SeerrUrl" name="SeerrUrl" type="url" is="emby-input" placeholder="http://seerr:5055" />
+                        <div class="fieldDescription">The address Jellyfin uses to reach Seerr.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="SeerrApiKey">Seerr API key</label>
+                        <input id="SeerrApiKey" name="SeerrApiKey" type="password" is="emby-input" autocomplete="off" />
+                        <div class="fieldDescription">Found in Seerr under Settings, General.</div>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="CollectionName">Collection name</label>
+                        <input id="CollectionName" name="CollectionName" type="text" is="emby-input" required />
+                        <div class="fieldDescription">Every user gets a collection with this name. Only its owner can see it.</div>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="DryRun" name="DryRun" type="checkbox" is="emby-checkbox" />
+                            <span>Dry run</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">Log what would change without touching collections or user settings.</div>
+                    </div>
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
                             <span>Save</span>
@@ -26,6 +48,10 @@
                 .addEventListener('pageshow', function() {
                     Dashboard.showLoadingMsg();
                     ApiClient.getPluginConfiguration(SeerrPlaylistsConfig.pluginUniqueId).then(function (config) {
+                        document.querySelector('#SeerrUrl').value = config.SeerrUrl;
+                        document.querySelector('#SeerrApiKey').value = config.SeerrApiKey;
+                        document.querySelector('#CollectionName').value = config.CollectionName;
+                        document.querySelector('#DryRun').checked = config.DryRun;
                         Dashboard.hideLoadingMsg();
                     });
                 });
@@ -34,6 +60,10 @@
                 .addEventListener('submit', function(e) {
                 Dashboard.showLoadingMsg();
                 ApiClient.getPluginConfiguration(SeerrPlaylistsConfig.pluginUniqueId).then(function (config) {
+                    config.SeerrUrl = document.querySelector('#SeerrUrl').value.trim();
+                    config.SeerrApiKey = document.querySelector('#SeerrApiKey').value.trim();
+                    config.CollectionName = document.querySelector('#CollectionName').value.trim();
+                    config.DryRun = document.querySelector('#DryRun').checked;
                     ApiClient.updatePluginConfiguration(SeerrPlaylistsConfig.pluginUniqueId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);
                     });
