@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Plugin.SeerrPlaylists.Configuration;
 using Jellyfin.Plugin.SeerrPlaylists.Seerr;
+using MediaBrowser.Controller.Configuration;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
@@ -14,17 +16,23 @@ public class SyncRequestsTask : IScheduledTask
     private readonly SeerrClient _client;
     private readonly SeerrConnectionVerifier _verifier;
     private readonly RequestResolver _resolver;
+    private readonly CollectionReconciler _reconciler;
+    private readonly IServerConfigurationManager _serverConfigurationManager;
     private readonly ILogger<SyncRequestsTask> _logger;
 
     public SyncRequestsTask(
         SeerrClient client,
         SeerrConnectionVerifier verifier,
         RequestResolver resolver,
+        CollectionReconciler reconciler,
+        IServerConfigurationManager serverConfigurationManager,
         ILogger<SyncRequestsTask> logger)
     {
         _client = client;
         _verifier = verifier;
         _resolver = resolver;
+        _reconciler = reconciler;
+        _serverConfigurationManager = serverConfigurationManager;
         _logger = logger;
     }
 
@@ -47,10 +55,10 @@ public class SyncRequestsTask : IScheduledTask
 
         var connection = SeerrConnection.Create(configuration.SeerrUrl, configuration.SeerrApiKey);
         await _verifier.VerifyAsync(connection, cancellationToken).ConfigureAwait(false);
-        progress.Report(20);
+        progress.Report(10);
 
         var requests = await _client.GetRequestsAsync(connection, cancellationToken).ConfigureAwait(false);
-        progress.Report(60);
+        progress.Report(40);
 
         var userRequests = _resolver.Resolve(requests);
         _logger.LogInformation(
@@ -59,13 +67,19 @@ public class SyncRequestsTask : IScheduledTask
             userRequests.Count);
         foreach (var (user, items) in userRequests)
         {
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "{User} requested {ItemCount} items in the library: {Items}",
                 user.Username,
                 items.Count,
                 string.Join(", ", items.Select(i => i.Name).Order(StringComparer.CurrentCulture)));
         }
 
+        WarnAboutGrouping();
+
+        var collectionName = string.IsNullOrWhiteSpace(configuration.CollectionName)
+            ? PluginConfiguration.DefaultCollectionName
+            : configuration.CollectionName.Trim();
+        await _reconciler.ReconcileAsync(userRequests, collectionName, configuration.DryRun, cancellationToken).ConfigureAwait(false);
         progress.Report(100);
     }
 
@@ -76,5 +90,16 @@ public class SyncRequestsTask : IScheduledTask
             Type = TaskTriggerInfoType.IntervalTrigger,
             IntervalTicks = TimeSpan.FromMinutes(15).Ticks,
         };
+    }
+
+    private void WarnAboutGrouping()
+    {
+        var serverConfiguration = _serverConfigurationManager.Configuration;
+        if (serverConfiguration.EnableGroupingMoviesIntoCollections || serverConfiguration.EnableGroupingShowsIntoCollections)
+        {
+            _logger.LogWarning(
+                "Grouping movies or shows into collections is enabled. Jellyfin then hides requested items from "
+                + "every user's library views behind request collections that only their owner can open.");
+        }
     }
 }

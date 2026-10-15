@@ -13,5 +13,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<SeerrClient>();
         serviceCollection.AddSingleton<SeerrConnectionVerifier>();
         serviceCollection.AddSingleton<RequestResolver>();
+        serviceCollection.AddSingleton<CollectionReconciler>();
+        serviceCollection.AddHostedService<LibraryChangeTrigger>();
     }
 }
