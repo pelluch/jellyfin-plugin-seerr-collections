@@ -470,6 +470,9 @@ dotnet_diagnostic.SA1515.severity = none
 # disable warning SA1600: Elements should be documented
 dotnet_diagnostic.SA1600.severity = none
 
+# disable warning CS1591: Missing XML comment for publicly visible type or member
+dotnet_diagnostic.CS1591.severity = none
+
 # disable warning SA1601: Partial elements should be documented
 dotnet_diagnostic.SA1601.severity = none
 

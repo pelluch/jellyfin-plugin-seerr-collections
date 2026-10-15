@@ -20,6 +20,12 @@
                         <div class="fieldDescription">Found in Seerr under Settings, General.</div>
                     </div>
                     <div class="inputContainer">
+                        <button is="emby-button" type="button" id="TestConnection" class="raised emby-button">
+                            <span>Test connection</span>
+                        </button>
+                        <div id="ConnectionResult" class="fieldDescription"></div>
+                    </div>
+                    <div class="inputContainer">
                         <label class="inputLabel inputLabelUnfocused" for="CollectionName">Collection name</label>
                         <input id="CollectionName" name="CollectionName" type="text" is="emby-input" required />
                         <div class="fieldDescription">Every user gets a collection with this name. Only its owner can see it.</div>
@@ -53,6 +59,39 @@
                         document.querySelector('#CollectionName').value = config.CollectionName;
                         document.querySelector('#DryRun').checked = config.DryRun;
                         Dashboard.hideLoadingMsg();
+                    });
+                });
+
+            document.querySelector('#TestConnection')
+                .addEventListener('click', function () {
+                    var button = this;
+                    var result = document.querySelector('#ConnectionResult');
+                    function show(text, color) {
+                        result.textContent = text;
+                        result.style.color = color;
+                    }
+
+                    button.disabled = true;
+                    show('Testing…', '');
+                    ApiClient.ajax({
+                        type: 'POST',
+                        url: ApiClient.getUrl('SeerrPlaylists/TestConnection'),
+                        data: JSON.stringify({
+                            Url: document.querySelector('#SeerrUrl').value.trim(),
+                            ApiKey: document.querySelector('#SeerrApiKey').value.trim()
+                        }),
+                        contentType: 'application/json',
+                        dataType: 'json'
+                    }).then(function (response) {
+                        if (response.Success) {
+                            show('Connected to Seerr ' + response.SeerrVersion + ', which uses this Jellyfin server ("' + response.JellyfinServerName + '").', '#52b54b');
+                        } else {
+                            show(response.Error, '#cc3333');
+                        }
+                    }, function () {
+                        show('The test could not run. Check the Jellyfin log.', '#cc3333');
+                    }).finally(function () {
+                        button.disabled = false;
                     });
                 });
 
