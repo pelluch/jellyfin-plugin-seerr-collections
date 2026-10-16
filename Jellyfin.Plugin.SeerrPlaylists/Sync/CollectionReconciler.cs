@@ -1,16 +1,21 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
+using Jellyfin.Plugin.SeerrPlaylists.Configuration;
 using MediaBrowser.Controller.Collections;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.IO;
+using MediaBrowser.Model.Net;
 using MediaBrowser.Model.Users;
 using Microsoft.Extensions.Logging;
 
@@ -26,6 +31,7 @@ public sealed class CollectionReconciler : IDisposable
     private readonly ILibraryManager _libraryManager;
     private readonly ICollectionManager _collectionManager;
     private readonly IUserManager _userManager;
+    private readonly IProviderManager _providerManager;
     private readonly ILogger<CollectionReconciler> _logger;
 
     private volatile bool _uninstalling;
@@ -34,11 +40,13 @@ public sealed class CollectionReconciler : IDisposable
         ILibraryManager libraryManager,
         ICollectionManager collectionManager,
         IUserManager userManager,
+        IProviderManager providerManager,
         ILogger<CollectionReconciler> logger)
     {
         _libraryManager = libraryManager;
         _collectionManager = collectionManager;
         _userManager = userManager;
+        _providerManager = providerManager;
         _logger = logger;
     }
 
@@ -151,6 +159,35 @@ public sealed class CollectionReconciler : IDisposable
         }
     }
 
+    // We lock to avoid a cover image changing mid-sync
+    public async Task SaveCoverImageAsync(byte[] image, string extension)
+    {
+        await _lock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            CoverImage.Save(image, extension);
+            _logger.LogInformation("Saved a new {Extension} cover image of {Length} bytes", extension, image.Length);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task DeleteCoverImageAsync()
+    {
+        await _lock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            CoverImage.Delete();
+            _logger.LogInformation("Removed the cover image");
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     public void Dispose() => _lock.Dispose();
 
     private static string DryRunPrefix(bool dryRun) => dryRun ? "Dry run: " : string.Empty;
@@ -162,6 +199,7 @@ public sealed class CollectionReconciler : IDisposable
         CancellationToken cancellationToken)
     {
         var desired = requests.Where(r => r.Items.Count > 0).ToDictionary(r => r.User.Id);
+        var cover = CoverImage.Find();
         var stopwatch = Stopwatch.StartNew();
         var owned = FindOwnedCollections();
         if (Plugin.VerboseLogging)
@@ -194,6 +232,7 @@ public sealed class CollectionReconciler : IDisposable
 
             if (collection is not null)
             {
+                await SyncCoverImageAsync(collection, userId, cover, dryRun, cancellationToken).ConfigureAwait(false);
                 WarnIfHiddenFromOwner(collection, userRequests.User);
             }
 
@@ -496,6 +535,55 @@ public sealed class CollectionReconciler : IDisposable
         collection.Tags = collection.Tags.Where(t => !OwnerTag.IsOwnerTag(t)).Append(OwnerTag.For(userId)).ToArray();
         collection.LockedFields = collection.LockedFields.Union([MetadataField.Name, MetadataField.Tags]).ToArray();
         await collection.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task SyncCoverImageAsync(BoxSet collection, Guid userId, FileInfo? cover, bool dryRun, CancellationToken cancellationToken)
+    {
+        var image = collection.GetImageInfo(ImageType.Primary, 0);
+        if (cover is null)
+        {
+            if (image is not null)
+            {
+                _logger.LogInformation(
+                    "{DryRun}Removing the cover image of collection {Name} ({Id}) of user {UserId}",
+                    DryRunPrefix(dryRun),
+                    collection.Name,
+                    collection.Id,
+                    userId.ToString("N"));
+                if (!dryRun)
+                {
+                    await collection.DeleteImageAsync(ImageType.Primary, 0).ConfigureAwait(false);
+                }
+            }
+
+            return;
+        }
+
+        // Jellyfin dates an image by its file, so an image saved after the cover is a copy of it.
+        if (image is not null && image.DateModified >= cover.LastWriteTimeUtc)
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "{DryRun}Setting the cover image of collection {Name} ({Id}) of user {UserId}",
+            DryRunPrefix(dryRun),
+            collection.Name,
+            collection.Id,
+            userId.ToString("N"));
+        if (dryRun)
+        {
+            return;
+        }
+
+        var stream = AsyncFile.OpenRead(cover.FullName);
+        await using (stream.ConfigureAwait(false))
+        {
+            await _providerManager.SaveImage(collection, stream, MimeTypes.GetMimeType(cover.FullName), ImageType.Primary, null, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        await collection.UpdateToRepositoryAsync(ItemUpdateType.ImageUpdate, cancellationToken).ConfigureAwait(false);
     }
 
     private void WarnIfHiddenFromOwner(BoxSet collection, User user)

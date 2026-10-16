@@ -58,6 +58,22 @@
                     </div>
                 </form>
                 <div class="verticalSection">
+                    <h2 class="sectionTitle">Cover image</h2>
+                    <div class="inputContainer">
+                        <img id="CoverImagePreview" alt="Current cover image" style="display: none; max-width: 200px; max-height: 300px; margin-bottom: 1em;" />
+                        <div id="CoverImageStatus" class="fieldDescription"></div>
+                        <input id="CoverImageFile" type="file" accept="image/jpeg,image/png,image/webp" hidden />
+                        <button is="emby-button" type="button" id="UploadCoverImage" class="raised emby-button">
+                            <span>Upload image</span>
+                        </button>
+                        <button is="emby-button" type="button" id="DeleteCoverImage" class="raised emby-button" style="display: none;">
+                            <span>Remove image</span>
+                        </button>
+                        <div class="fieldDescription">Every request collection shows this image. A 2:3 portrait image, such as 1000 × 1500 pixels, fits best. JPEG, PNG or WebP. Saved right away, no need to press Save.</div>
+                        <div id="CoverImageResult" class="fieldDescription"></div>
+                    </div>
+                </div>
+                <div class="verticalSection">
                     <h2 class="sectionTitle">Remove collections</h2>
                     <div class="inputContainer">
                         <button is="emby-button" type="button" id="RemoveCollections" class="raised emby-button">
@@ -74,8 +90,80 @@
                 pluginUniqueId: '727ca564-1ccc-4dff-b104-ab3f2254418d'
             };
 
+            function loadCoverImage() {
+                var preview = document.querySelector('#CoverImagePreview');
+                var status = document.querySelector('#CoverImageStatus');
+                var deleteButton = document.querySelector('#DeleteCoverImage');
+                preview.onload = function () {
+                    preview.style.display = '';
+                    deleteButton.style.display = '';
+                    status.textContent = '';
+                };
+                preview.onerror = function () {
+                    preview.style.display = 'none';
+                    deleteButton.style.display = 'none';
+                    status.textContent = 'No cover image is set, so collections have no image.';
+                };
+                // An img element can't send the Authorization header. The v parameter defeats the browser cache.
+                preview.src = ApiClient.getUrl('SeerrPlaylists/CoverImage', { ApiKey: ApiClient.accessToken(), v: Date.now() });
+            }
+
+            function changeCoverImage(type, data, contentType, doneText) {
+                var result = document.querySelector('#CoverImageResult');
+                result.textContent = 'Saving…';
+                result.style.color = '';
+                ApiClient.ajax({
+                    type: type,
+                    url: ApiClient.getUrl('SeerrPlaylists/CoverImage'),
+                    data: data,
+                    contentType: contentType,
+                    dataType: 'json'
+                }).then(function (response) {
+                    var text = doneText;
+                    if (!response.SyncEnabled) {
+                        text += ' Sync is turned off, so collections keep their current image.';
+                    } else if (response.DryRun) {
+                        text += ' Dry run is on, so the next sync only logs which collections would change.';
+                    } else {
+                        text += ' Collections change with the next sync, in about a minute.';
+                    }
+
+                    result.textContent = text;
+                    result.style.color = '#52b54b';
+                }, function () {
+                    result.textContent = 'The cover image could not be changed. Check the Jellyfin log.';
+                    result.style.color = '#cc3333';
+                }).finally(loadCoverImage);
+            }
+
+            document.querySelector('#UploadCoverImage')
+                .addEventListener('click', function () {
+                    document.querySelector('#CoverImageFile').click();
+                });
+
+            document.querySelector('#CoverImageFile')
+                .addEventListener('change', function () {
+                    var file = this.files[0];
+                    this.value = '';
+                    if (!file) {
+                        return;
+                    }
+
+                    var reader = new FileReader();
+                    reader.onload = function () {
+                        changeCoverImage('POST', reader.result.split(',')[1], file.type, 'Saved.');
+                    };
+                    reader.readAsDataURL(file);
+                });
+
+            document.querySelector('#DeleteCoverImage')
+                .addEventListener('click', function () {
+                    changeCoverImage('DELETE', null, null, 'Removed.');
+                });
+
             document.querySelector('#SeerrPlaylistsConfigPage')
                 .addEventListener('pageshow', function() {
+                    loadCoverImage();
                     Dashboard.showLoadingMsg();
                     ApiClient.getPluginConfiguration(SeerrPlaylistsConfig.pluginUniqueId).then(function (config) {
                         document.querySelector('#SeerrUrl').value = config.SeerrUrl;
