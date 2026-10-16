@@ -10,6 +10,7 @@ using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Entities;
+using MediaBrowser.Model.Users;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.SeerrPlaylists.Sync;
@@ -17,6 +18,7 @@ namespace Jellyfin.Plugin.SeerrPlaylists.Sync;
 public sealed class CollectionReconciler : IDisposable
 {
     private readonly SemaphoreSlim _lock = new(1, 1);
+    private readonly AsyncLocal<bool> _updatingPolicy = new();
     private readonly ILibraryManager _libraryManager;
     private readonly ICollectionManager _collectionManager;
     private readonly IUserManager _userManager;
@@ -35,6 +37,10 @@ public sealed class CollectionReconciler : IDisposable
         _userManager = userManager;
         _logger = logger;
     }
+
+    // UserUpdated is raised inside a user policy update, which this plugin also
+    // affects. This is needed to tell when our own policy update is happening.
+    public bool IsUpdatingPolicy => _updatingPolicy.Value;
 
     public async Task ReconcileAsync(
         IReadOnlyList<UserRequests> requests,
@@ -152,14 +158,17 @@ public sealed class CollectionReconciler : IDisposable
             var collection = owned[userId].FirstOrDefault();
             if (collection is null)
             {
-                await CreateCollectionAsync(userRequests, collectionName, dryRun, cancellationToken).ConfigureAwait(false);
+                collection = await CreateCollectionAsync(userRequests, collectionName, dryRun, cancellationToken).ConfigureAwait(false);
             }
             else
             {
                 await UpdateCollectionAsync(collection, userRequests, collectionName, dryRun, cancellationToken).ConfigureAwait(false);
             }
 
-            WarnIfHiddenByAllowedTags(userRequests.User);
+            if (collection is not null)
+            {
+                WarnIfHiddenFromOwner(collection, userRequests.User);
+            }
         }
 
         foreach (var group in owned)
@@ -231,7 +240,7 @@ public sealed class CollectionReconciler : IDisposable
         if (!dryRun)
         {
             policy.BlockedTags = [.. policy.BlockedTags, .. missing];
-            await _userManager.UpdatePolicyAsync(user.Id, policy).ConfigureAwait(false);
+            await UpdatePolicyAsync(user.Id, policy).ConfigureAwait(false);
         }
     }
 
@@ -260,11 +269,24 @@ public sealed class CollectionReconciler : IDisposable
             }
 
             policy.BlockedTags = policy.BlockedTags.Where(t => !OwnerTag.IsOwnerTag(t)).Concat(wanted.Order(StringComparer.Ordinal)).ToArray();
-            await _userManager.UpdatePolicyAsync(user.Id, policy).ConfigureAwait(false);
+            await UpdatePolicyAsync(user.Id, policy).ConfigureAwait(false);
         }
     }
 
-    private async Task CreateCollectionAsync(
+    private async Task UpdatePolicyAsync(Guid userId, UserPolicy policy)
+    {
+        _updatingPolicy.Value = true;
+        try
+        {
+            await _userManager.UpdatePolicyAsync(userId, policy).ConfigureAwait(false);
+        }
+        finally
+        {
+            _updatingPolicy.Value = false;
+        }
+    }
+
+    private async Task<BoxSet?> CreateCollectionAsync(
         UserRequests userRequests,
         string collectionName,
         bool dryRun,
@@ -279,7 +301,7 @@ public sealed class CollectionReconciler : IDisposable
             Names(items));
         if (dryRun)
         {
-            return;
+            return null;
         }
 
         // The collection's folder is named after it, so a unique name keeps identically named collections apart.
@@ -291,6 +313,7 @@ public sealed class CollectionReconciler : IDisposable
 
         // Items go in only after the owner tag hides the collection from everyone else.
         await _collectionManager.AddToCollectionAsync(collection.Id, items.Select(i => i.Id)).ConfigureAwait(false);
+        return collection;
     }
 
     private async Task UpdateCollectionAsync(
@@ -356,14 +379,22 @@ public sealed class CollectionReconciler : IDisposable
         await collection.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
     }
 
-    private void WarnIfHiddenByAllowedTags(User user)
+    private void WarnIfHiddenFromOwner(BoxSet collection, User user)
     {
-        var allowedTags = _userManager.GetUserDto(user).Policy.AllowedTags;
-        if (allowedTags.Length > 0 && !allowedTags.Contains(OwnerTag.For(user.Id), StringComparer.OrdinalIgnoreCase))
+        if (!_libraryManager.GetCollectionFolders(collection).Any(folder => folder.IsVisible(user)))
         {
             _logger.LogWarning(
-                "{User} has allowed tags set, so they cannot see their collection unless {Tag} is one of them",
+                "{User} cannot see their collection {Name}, because they have no access to the library that holds collections",
                 user.Username,
+                collection.Name);
+        }
+
+        if (!collection.IsParentalAllowed(user, false))
+        {
+            _logger.LogWarning(
+                "{User} cannot see their collection {Name} because of their parental controls. Any allowed tags they have must include {Tag}",
+                user.Username,
+                collection.Name,
                 OwnerTag.For(user.Id));
         }
     }

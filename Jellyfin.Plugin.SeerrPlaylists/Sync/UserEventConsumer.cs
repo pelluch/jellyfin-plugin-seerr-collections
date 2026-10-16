@@ -16,11 +16,13 @@ public class UserEventConsumer :
     private static readonly TimeSpan _recheckDelay = TimeSpan.FromSeconds(10);
 
     private readonly CollectionReconciler _reconciler;
+    private readonly SyncScheduler _scheduler;
     private readonly ILogger<UserEventConsumer> _logger;
 
-    public UserEventConsumer(CollectionReconciler reconciler, ILogger<UserEventConsumer> logger)
+    public UserEventConsumer(CollectionReconciler reconciler, SyncScheduler scheduler, ILogger<UserEventConsumer> logger)
     {
         _reconciler = reconciler;
+        _scheduler = scheduler;
         _logger = logger;
     }
 
@@ -33,7 +35,16 @@ public class UserEventConsumer :
         _ = RecheckLaterAsync(userId);
     }
 
-    public Task OnEvent(UserUpdatedEventArgs eventArgs) => _reconciler.RestoreBlockedTagsAsync(eventArgs.Argument.Id, DryRun);
+    public async Task OnEvent(UserUpdatedEventArgs eventArgs)
+    {
+        await _reconciler.RestoreBlockedTagsAsync(eventArgs.Argument.Id, DryRun).ConfigureAwait(false);
+
+        // Library access or parental controls may have changed which copy of a title the user can see.
+        if (!_reconciler.IsUpdatingPolicy)
+        {
+            _scheduler.SyncSoon();
+        }
+    }
 
     public Task OnEvent(UserDeletedEventArgs eventArgs) => _reconciler.RemoveOwnerAsync(eventArgs.Argument.Id, DryRun);
 

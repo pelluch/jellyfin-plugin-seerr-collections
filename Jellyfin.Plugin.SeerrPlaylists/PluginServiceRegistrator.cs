@@ -16,6 +16,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<SeerrConnectionVerifier>();
         serviceCollection.AddSingleton<RequestResolver>();
         serviceCollection.AddSingleton<CollectionReconciler>();
+        serviceCollection.AddSingleton<SyncScheduler>();
         serviceCollection.AddHostedService<LibraryChangeTrigger>();
         serviceCollection.AddScoped<IEventConsumer<UserCreatedEventArgs>, UserEventConsumer>();
         serviceCollection.AddScoped<IEventConsumer<UserUpdatedEventArgs>, UserEventConsumer>();
