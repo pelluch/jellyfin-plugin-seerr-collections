@@ -30,6 +30,8 @@ public class RequestResolver
 
     public IReadOnlyList<UserRequests> Resolve(IEnumerable<SeerrRequest> requests)
     {
+        var groupingStopwatch = Stopwatch.StartNew();
+        var users = _userManager.GetUsers().ToDictionary(u => u.Id);
         var requestsByUser = new Dictionary<Guid, (User User, List<SeerrRequest> Requests)>();
         foreach (var request in requests)
         {
@@ -39,7 +41,7 @@ public class RequestResolver
                 continue;
             }
 
-            var user = FindUser(request);
+            var user = Guid.TryParse(request.RequestedBy?.JellyfinUserId, out var userId) ? users.GetValueOrDefault(userId) : null;
             if (user is null)
             {
                 _logger.LogDebug(
@@ -56,6 +58,14 @@ public class RequestResolver
             }
 
             entry.Requests.Add(request);
+        }
+
+        if (Plugin.VerboseLogging)
+        {
+            _logger.LogInformation(
+                "Grouped requests by {UserCount} requesters in {ElapsedMs} ms",
+                requestsByUser.Count,
+                groupingStopwatch.ElapsedMilliseconds);
         }
 
         var result = new List<UserRequests>();
@@ -111,9 +121,6 @@ public class RequestResolver
     };
 
     private static string Key(BaseItemKind kind, string provider, string id) => $"{kind}:{provider}:{id}";
-
-    private User? FindUser(SeerrRequest request)
-        => Guid.TryParse(request.RequestedBy?.JellyfinUserId, out var userId) ? _userManager.GetUserById(userId) : null;
 
     private ILookup<string, BaseItem> FindVisibleItems(User user, IReadOnlyCollection<SeerrRequest> requests)
     {
