@@ -46,12 +46,13 @@ public class RequestResolver
                 continue;
             }
 
-            var items = FindItems(request);
-            if (items.Count == 0)
+            var item = FindItem(request, user);
+            if (item is null)
             {
                 _logger.LogDebug(
-                    "Skipping Seerr request {RequestId}: {Type} with TMDb id {TmdbId} is not in the library",
+                    "Skipping Seerr request {RequestId}: {User} can see no {Type} with TMDb id {TmdbId}",
                     request.Id,
+                    user.Username,
                     request.Type,
                     request.Media?.TmdbId);
                 continue;
@@ -63,10 +64,7 @@ public class RequestResolver
                 users.Add(user.Id, entry);
             }
 
-            foreach (var item in items)
-            {
-                entry.Items.TryAdd(item.Id, item);
-            }
+            entry.Items.TryAdd(item.Id, item);
         }
 
         return users.Values.Select(e => new UserRequests(e.User, e.Items.Values)).ToList();
@@ -75,7 +73,7 @@ public class RequestResolver
     private User? FindUser(SeerrRequest request)
         => Guid.TryParse(request.RequestedBy?.JellyfinUserId, out var userId) ? _userManager.GetUserById(userId) : null;
 
-    private IReadOnlyList<BaseItem> FindItems(SeerrRequest request)
+    private BaseItem? FindItem(SeerrRequest request, User user)
     {
         var media = request.Media;
         BaseItemKind? kind = request.Type switch
@@ -86,31 +84,54 @@ public class RequestResolver
         };
         if (media is null || kind is null)
         {
-            return [];
+            return null;
+        }
+
+        var lookups = new List<(string Provider, int? Id)>();
+        if (kind == BaseItemKind.Series)
+        {
+            lookups.Add((nameof(MetadataProvider.Tvdb), media.TvdbId));
+        }
+
+        lookups.Add((nameof(MetadataProvider.Tmdb), media.TmdbId));
+
+        foreach (var (provider, id) in lookups)
+        {
+            if (id is null)
+            {
+                continue;
+            }
+
+            // Querying as the requester returns one item per merged group: the primary if they can see it,
+            // otherwise a version in a library they can. Separate copies of a title are not merged.
+            var copies = _libraryManager.GetItemList(new InternalItemsQuery(user)
+            {
+                IncludeItemTypes = [kind.Value],
+                Recursive = true,
+                HasAnyProviderId = new Dictionary<string, string> { [provider] = id.Value.ToString(CultureInfo.InvariantCulture) },
+            });
+            if (copies.Count > 1)
+            {
+                _logger.LogDebug(
+                    "Seerr request {RequestId}: {User} can see {Count} copies of {Name}, using the oldest",
+                    request.Id,
+                    user.Username,
+                    copies.Count,
+                    copies[0].Name);
+            }
+
+            if (copies.Count > 0)
+            {
+                return copies.OrderBy(c => c.DateCreated).ThenBy(c => c.Id).First();
+            }
         }
 
         var linkedId = request.Is4k ? media.JellyfinMediaId4k ?? media.JellyfinMediaId : media.JellyfinMediaId;
-        if (Guid.TryParse(linkedId, out var itemId)
+        return Guid.TryParse(linkedId, out var itemId)
             && _libraryManager.GetItemById(itemId) is { } linkedItem
-            && linkedItem.GetBaseItemKind() == kind)
-        {
-            return [linkedItem];
-        }
-
-        var providerIds = new Dictionary<string, string>
-        {
-            [nameof(MetadataProvider.Tmdb)] = media.TmdbId.ToString(CultureInfo.InvariantCulture),
-        };
-        if (kind == BaseItemKind.Series && media.TvdbId is { } tvdbId)
-        {
-            providerIds[nameof(MetadataProvider.Tvdb)] = tvdbId.ToString(CultureInfo.InvariantCulture);
-        }
-
-        return _libraryManager.GetItemList(new InternalItemsQuery
-        {
-            IncludeItemTypes = [kind.Value],
-            Recursive = true,
-            HasAnyProviderId = providerIds,
-        });
+            && linkedItem.GetBaseItemKind() == kind
+            && linkedItem.IsVisibleStandalone(user)
+                ? linkedItem
+                : null;
     }
 }
