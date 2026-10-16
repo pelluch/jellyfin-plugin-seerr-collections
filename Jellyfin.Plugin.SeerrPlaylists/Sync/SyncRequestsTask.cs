@@ -65,10 +65,6 @@ public class SyncRequestsTask : IScheduledTask
 
         var userRequests = _resolver.Resolve(requests);
         var matchMs = stopwatch.ElapsedMilliseconds - verifyMs - fetchMs;
-        _logger.LogInformation(
-            "Fetched {RequestCount} Seerr requests, {UserCount} users have requested items in the library",
-            requests.Count,
-            userRequests.Count);
 
         WarnAboutGrouping();
 

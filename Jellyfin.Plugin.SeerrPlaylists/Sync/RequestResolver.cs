@@ -28,15 +28,18 @@ public class RequestResolver
         _logger = logger;
     }
 
-    public IReadOnlyList<UserRequests> Resolve(IEnumerable<SeerrRequest> requests)
+    public IReadOnlyList<UserRequests> Resolve(IReadOnlyCollection<SeerrRequest> requests)
     {
         var groupingStopwatch = Stopwatch.StartNew();
         var users = _userManager.GetUsers().ToDictionary(u => u.Id);
         var requestsByUser = new Dictionary<Guid, (User User, List<SeerrRequest> Requests)>();
+        var declined = 0;
+        var withoutJellyfinUser = 0;
         foreach (var request in requests)
         {
             if (request.Status == SeerrRequestStatus.Declined)
             {
+                declined++;
                 _logger.LogDebug("Skipping Seerr request {RequestId}: declined", request.Id);
                 continue;
             }
@@ -44,6 +47,7 @@ public class RequestResolver
             var user = Guid.TryParse(request.RequestedBy?.JellyfinUserId, out var userId) ? users.GetValueOrDefault(userId) : null;
             if (user is null)
             {
+                withoutJellyfinUser++;
                 _logger.LogDebug(
                     "Skipping Seerr request {RequestId}: Seerr user {SeerrUserId} is not a Jellyfin user",
                     request.Id,
@@ -68,6 +72,7 @@ public class RequestResolver
                 groupingStopwatch.ElapsedMilliseconds);
         }
 
+        var totals = new Dictionary<RequestOutcome, int>();
         var result = new List<UserRequests>();
         foreach (var (user, userRequests) in requestsByUser.Values)
         {
@@ -75,30 +80,40 @@ public class RequestResolver
             var visible = FindVisibleItems(user, userRequests);
             var lookupMs = stopwatch.ElapsedMilliseconds;
             var items = new Dictionary<Guid, BaseItem>();
+            var repeats = 0;
             foreach (var request in userRequests)
             {
-                var item = FindItem(request, user, visible);
-                if (item is null)
+                var (item, outcome) = Match(request, user, visible);
+                if (item is not null && !items.TryAdd(item.Id, item))
                 {
-                    _logger.LogDebug(
-                        "Skipping Seerr request {RequestId}: user {UserId} can see no {Type} with TMDb id {TmdbId}",
-                        request.Id,
-                        user.Id.ToString("N"),
-                        request.Type,
-                        request.Media?.TmdbId);
-                    continue;
+                    outcome = RequestOutcome.Repeat;
+                    repeats++;
                 }
 
-                items.TryAdd(item.Id, item);
+                totals[outcome] = totals.GetValueOrDefault(outcome) + 1;
+                if (item is null && Plugin.VerboseLogging)
+                {
+                    _logger.LogInformation(
+                        "Request {RequestId} of user {UserId} not matched ({Outcome}): {Type} with TMDb id {TmdbId} and TVDB id {TvdbId}, Seerr status {SeerrStatus}",
+                        request.Id,
+                        user.Id.ToString("N"),
+                        outcome,
+                        request.Type,
+                        request.Media?.TmdbId,
+                        request.Media?.TvdbId,
+                        SeerrStatus(request));
+                }
             }
 
             if (Plugin.VerboseLogging)
             {
                 _logger.LogInformation(
-                    "Matched {Matched} of {Requests} requests of user {UserId} in {ElapsedMs} ms ({LookupMs} ms looking up {Candidates} library items)",
-                    items.Count,
-                    userRequests.Count,
+                    "User {UserId}: {Requests} requests gave {Items} items, {Repeats} repeats and {Unmatched} unmatched, in {ElapsedMs} ms ({LookupMs} ms looking up {Candidates} library items)",
                     user.Id.ToString("N"),
+                    userRequests.Count,
+                    items.Count,
+                    repeats,
+                    userRequests.Count - items.Count - repeats,
                     stopwatch.ElapsedMilliseconds,
                     lookupMs,
                     visible.SelectMany(g => g).Distinct().Count());
@@ -109,6 +124,20 @@ public class RequestResolver
                 result.Add(new UserRequests(user, items.Values));
             }
         }
+
+        _logger.LogInformation(
+            "Fetched {Total} Seerr requests: {Matched} matched, {Repeats} repeats, {NotAvailableYet} not available yet, {NoLongerAvailable} no longer available, {Hidden} hidden from their requester, {NotFound} not found, {Other} other, {Declined} declined, {WithoutJellyfinUser} from Seerr users without a Jellyfin account. {UserCount} users have requested items in the library",
+            requests.Count,
+            totals.GetValueOrDefault(RequestOutcome.Matched),
+            totals.GetValueOrDefault(RequestOutcome.Repeat),
+            totals.GetValueOrDefault(RequestOutcome.NotAvailableYet),
+            totals.GetValueOrDefault(RequestOutcome.NoLongerAvailable),
+            totals.GetValueOrDefault(RequestOutcome.HiddenFromRequester),
+            totals.GetValueOrDefault(RequestOutcome.NotFound),
+            totals.GetValueOrDefault(RequestOutcome.Other),
+            declined,
+            withoutJellyfinUser,
+            result.Count);
 
         return result;
     }
@@ -121,6 +150,9 @@ public class RequestResolver
     };
 
     private static string Key(BaseItemKind kind, string provider, string id) => $"{kind}:{provider}:{id}";
+
+    private static SeerrMediaStatus SeerrStatus(SeerrRequest request)
+        => (request.Is4k ? request.Media?.Status4k : request.Media?.Status) ?? SeerrMediaStatus.NotSet;
 
     private ILookup<string, BaseItem> FindVisibleItems(User user, IReadOnlyCollection<SeerrRequest> requests)
     {
@@ -161,13 +193,13 @@ public class RequestResolver
             .ToLookup(entry => entry.Key, entry => entry.Item);
     }
 
-    private BaseItem? FindItem(SeerrRequest request, User user, ILookup<string, BaseItem> visible)
+    private (BaseItem? Item, RequestOutcome Outcome) Match(SeerrRequest request, User user, ILookup<string, BaseItem> visible)
     {
         var media = request.Media;
         var kind = KindOf(request);
         if (media is null || kind is null)
         {
-            return null;
+            return (null, RequestOutcome.Other);
         }
 
         var lookups = new List<(string Provider, int? Id)>();
@@ -198,16 +230,26 @@ public class RequestResolver
 
             if (copies.Count > 0)
             {
-                return copies.OrderBy(c => c.DateCreated).ThenBy(c => c.Id).First();
+                return (copies.OrderBy(c => c.DateCreated).ThenBy(c => c.Id).First(), RequestOutcome.Matched);
             }
         }
 
         var linkedId = request.Is4k ? media.JellyfinMediaId4k ?? media.JellyfinMediaId : media.JellyfinMediaId;
-        return Guid.TryParse(linkedId, out var itemId)
+        if (Guid.TryParse(linkedId, out var itemId)
             && _libraryManager.GetItemById(itemId) is { } linkedItem
-            && linkedItem.GetBaseItemKind() == kind
-            && linkedItem.IsVisibleStandalone(user)
-                ? linkedItem
-                : null;
+            && linkedItem.GetBaseItemKind() == kind)
+        {
+            return linkedItem.IsVisibleStandalone(user)
+                ? (linkedItem, RequestOutcome.Matched)
+                : (null, RequestOutcome.HiddenFromRequester);
+        }
+
+        return (null, SeerrStatus(request) switch
+        {
+            SeerrMediaStatus.Unknown or SeerrMediaStatus.Pending or SeerrMediaStatus.Processing => RequestOutcome.NotAvailableYet,
+            SeerrMediaStatus.Deleted => RequestOutcome.NoLongerAvailable,
+            SeerrMediaStatus.PartiallyAvailable or SeerrMediaStatus.Available => RequestOutcome.NotFound,
+            _ => RequestOutcome.Other,
+        });
     }
 }
