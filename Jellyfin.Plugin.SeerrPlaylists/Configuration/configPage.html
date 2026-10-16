@@ -32,6 +32,13 @@
                     </div>
                     <div class="checkboxContainer checkboxContainer-withDescription">
                         <label class="emby-checkbox-label">
+                            <input id="SyncEnabled" name="SyncEnabled" type="checkbox" is="emby-checkbox" />
+                            <span>Sync enabled</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">Turn off to stop creating and updating collections. Existing collections stay hidden from other users.</div>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
                             <input id="DryRun" name="DryRun" type="checkbox" is="emby-checkbox" />
                             <span>Dry run</span>
                         </label>
@@ -50,6 +57,16 @@
                         </button>
                     </div>
                 </form>
+                <div class="verticalSection">
+                    <h2 class="sectionTitle">Remove collections</h2>
+                    <div class="inputContainer">
+                        <button is="emby-button" type="button" id="RemoveCollections" class="raised emby-button">
+                            <span>Remove all request collections</span>
+                        </button>
+                        <div class="fieldDescription">Deletes every collection this plugin created and removes its tags from all users. Turn off Sync enabled first, or the next sync recreates them. With Dry run ticked, it only logs what it would remove.</div>
+                        <div id="RemovalResult" class="fieldDescription"></div>
+                    </div>
+                </div>
             </div>
         </div>
         <script type="text/javascript">
@@ -64,6 +81,7 @@
                         document.querySelector('#SeerrUrl').value = config.SeerrUrl;
                         document.querySelector('#SeerrApiKey').value = config.SeerrApiKey;
                         document.querySelector('#CollectionName').value = config.CollectionName;
+                        document.querySelector('#SyncEnabled').checked = config.SyncEnabled;
                         document.querySelector('#DryRun').checked = config.DryRun;
                         document.querySelector('#VerboseLogging').checked = config.VerboseLogging;
                         Dashboard.hideLoadingMsg();
@@ -103,6 +121,41 @@
                     });
                 });
 
+            document.querySelector('#RemoveCollections')
+                .addEventListener('click', function () {
+                    var button = this;
+                    var result = document.querySelector('#RemovalResult');
+                    var dryRun = document.querySelector('#DryRun').checked;
+                    if (!dryRun && !window.confirm('Delete every request collection and remove their tags from all users?')) {
+                        return;
+                    }
+
+                    button.disabled = true;
+                    result.textContent = dryRun ? 'Checking…' : 'Removing…';
+                    result.style.color = '';
+                    ApiClient.ajax({
+                        type: 'POST',
+                        url: ApiClient.getUrl('SeerrPlaylists/RemoveCollections'),
+                        data: JSON.stringify({ DryRun: dryRun }),
+                        contentType: 'application/json',
+                        dataType: 'json'
+                    }).then(function (response) {
+                        var text = (response.DryRun ? 'Dry run: would remove ' : 'Removed ')
+                            + response.Collections + ' collections and clear owner tags of ' + response.Users + ' users.';
+                        if (response.SyncEnabled) {
+                            text += ' Sync is still enabled, so the next sync recreates them.';
+                        }
+
+                        result.textContent = text;
+                        result.style.color = response.SyncEnabled && !response.DryRun ? '#cc3333' : '#52b54b';
+                    }, function () {
+                        result.textContent = 'The removal could not run. Check the Jellyfin log.';
+                        result.style.color = '#cc3333';
+                    }).finally(function () {
+                        button.disabled = false;
+                    });
+                });
+
             document.querySelector('#SeerrPlaylistsConfigForm')
                 .addEventListener('submit', function(e) {
                 Dashboard.showLoadingMsg();
@@ -110,6 +163,7 @@
                     config.SeerrUrl = document.querySelector('#SeerrUrl').value.trim();
                     config.SeerrApiKey = document.querySelector('#SeerrApiKey').value.trim();
                     config.CollectionName = document.querySelector('#CollectionName').value.trim();
+                    config.SyncEnabled = document.querySelector('#SyncEnabled').checked;
                     config.DryRun = document.querySelector('#DryRun').checked;
                     config.VerboseLogging = document.querySelector('#VerboseLogging').checked;
                     ApiClient.updatePluginConfiguration(SeerrPlaylistsConfig.pluginUniqueId, config).then(function (result) {

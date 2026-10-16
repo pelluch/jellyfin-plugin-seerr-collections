@@ -6,6 +6,8 @@ public class PluginConfiguration : BasePluginConfiguration
 {
     public const string DefaultCollectionName = "My Requests";
 
+    public bool SyncEnabled { get; set; } = true;
+
     public string SeerrUrl { get; set; } = string.Empty;
 
     public string SeerrApiKey { get; set; } = string.Empty;

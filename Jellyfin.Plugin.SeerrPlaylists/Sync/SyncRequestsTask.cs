@@ -47,6 +47,12 @@ public class SyncRequestsTask : IScheduledTask
     public async Task ExecuteAsync(IProgress<double> progress, CancellationToken cancellationToken)
     {
         var configuration = Plugin.Instance!.Configuration;
+        if (!configuration.SyncEnabled)
+        {
+            _logger.LogInformation("Syncing is turned off in the plugin settings, nothing to sync");
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(configuration.SeerrUrl) || string.IsNullOrWhiteSpace(configuration.SeerrApiKey))
         {
             _logger.LogInformation("Seerr is not configured yet, nothing to sync");

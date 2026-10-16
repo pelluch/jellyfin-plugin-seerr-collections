@@ -18,6 +18,9 @@ namespace Jellyfin.Plugin.SeerrPlaylists.Sync;
 
 public sealed class CollectionReconciler : IDisposable
 {
+    // Jellyfin's first metadata refresh of a new collection resets its display order, shortly after creation.
+    private static readonly TimeSpan _displayOrderRecheckDelay = TimeSpan.FromSeconds(60);
+
     private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly AsyncLocal<bool> _updatingPolicy = new();
     private readonly ILibraryManager _libraryManager;
@@ -106,6 +109,25 @@ public sealed class CollectionReconciler : IDisposable
         }
     }
 
+    public async Task<(int Collections, int Users)> RemoveAllAsync(bool dryRun)
+    {
+        await _lock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_uninstalling)
+            {
+                return (0, 0);
+            }
+
+            _logger.LogInformation("{DryRun}Removing every request collection and owner tag", DryRunPrefix(dryRun));
+            return await RemoveAllLockedAsync(dryRun).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
     public async Task RemoveEverythingAsync()
     {
         await _lock.WaitAsync().ConfigureAwait(false);
@@ -115,12 +137,7 @@ public sealed class CollectionReconciler : IDisposable
             _logger.LogInformation("Uninstalling, so deleting every request collection and owner tag");
             try
             {
-                foreach (var collection in FindOwnedCollections().SelectMany(g => g))
-                {
-                    DeleteCollection(collection, dryRun: false);
-                }
-
-                await SyncBlockedTagsAsync([], dryRun: false).ConfigureAwait(false);
+                await RemoveAllLockedAsync(dryRun: false).ConfigureAwait(false);
             }
             catch
             {
@@ -223,6 +240,18 @@ public sealed class CollectionReconciler : IDisposable
             .OrderBy(c => c.Collection.DateCreated)
             .ToLookup(c => c.Owner!.Value, c => c.Collection);
 
+    private async Task<(int Collections, int Users)> RemoveAllLockedAsync(bool dryRun)
+    {
+        var collections = FindOwnedCollections().SelectMany(g => g).ToList();
+        foreach (var collection in collections)
+        {
+            DeleteCollection(collection, dryRun);
+        }
+
+        var users = await SyncBlockedTagsAsync([], dryRun).ConfigureAwait(false);
+        return (collections.Count, users);
+    }
+
     private void DeleteCollection(BoxSet collection, bool dryRun)
     {
         _logger.LogInformation("{DryRun}Deleting collection {Name} ({Id})", DryRunPrefix(dryRun), collection.Name, collection.Id);
@@ -264,7 +293,7 @@ public sealed class CollectionReconciler : IDisposable
         }
     }
 
-    private async Task SyncBlockedTagsAsync(IEnumerable<Guid> ownerIds, bool dryRun)
+    private async Task<int> SyncBlockedTagsAsync(IEnumerable<Guid> ownerIds, bool dryRun)
     {
         var stopwatch = Stopwatch.StartNew();
         var owners = ownerIds.ToHashSet();
@@ -304,6 +333,8 @@ public sealed class CollectionReconciler : IDisposable
                 stopwatch.ElapsedMilliseconds,
                 updated);
         }
+
+        return updated;
     }
 
     private async Task UpdatePolicyAsync(Guid userId, UserPolicy policy)
@@ -345,7 +376,38 @@ public sealed class CollectionReconciler : IDisposable
 
         // Items go in only after the owner tag hides the collection from everyone else.
         await _collectionManager.AddToCollectionAsync(collection.Id, items.Select(i => i.Id)).ConfigureAwait(false);
+        _ = RestoreDisplayOrderLaterAsync(collection.Id);
         return collection;
+    }
+
+    private async Task RestoreDisplayOrderLaterAsync(Guid collectionId)
+    {
+        try
+        {
+            await Task.Delay(_displayOrderRecheckDelay).ConfigureAwait(false);
+            await _lock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_uninstalling
+                    || _libraryManager.GetItemById(collectionId) is not BoxSet collection
+                    || collection.DisplayOrder == nameof(ItemSortBy.Default))
+                {
+                    return;
+                }
+
+                collection.DisplayOrder = nameof(ItemSortBy.Default);
+                await collection.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
+                _logger.LogInformation("Restored the display order of new collection {Name} ({Id})", collection.Name, collection.Id);
+            }
+            finally
+            {
+                _lock.Release();
+            }
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "Restoring the display order of new collection {Id} failed", collectionId);
+        }
     }
 
     private async Task UpdateCollectionAsync(
