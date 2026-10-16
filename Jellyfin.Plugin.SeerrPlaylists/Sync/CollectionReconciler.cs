@@ -22,6 +22,8 @@ public sealed class CollectionReconciler : IDisposable
     private readonly IUserManager _userManager;
     private readonly ILogger<CollectionReconciler> _logger;
 
+    private volatile bool _uninstalling;
+
     public CollectionReconciler(
         ILibraryManager libraryManager,
         ICollectionManager collectionManager,
@@ -43,6 +45,12 @@ public sealed class CollectionReconciler : IDisposable
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (_uninstalling)
+            {
+                _logger.LogInformation("Skipping sync, the plugin is being uninstalled");
+                return;
+            }
+
             await ReconcileLockedAsync(requests, collectionName, dryRun, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -72,6 +80,11 @@ public sealed class CollectionReconciler : IDisposable
         await _lock.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (_uninstalling)
+            {
+                return;
+            }
+
             var owned = FindOwnedCollections();
             foreach (var collection in owned[userId])
             {
@@ -79,6 +92,34 @@ public sealed class CollectionReconciler : IDisposable
             }
 
             await SyncBlockedTagsAsync(owned.Select(g => g.Key).Where(owner => owner != userId), dryRun).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task RemoveEverythingAsync()
+    {
+        await _lock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            _uninstalling = true;
+            _logger.LogInformation("Uninstalling, so deleting every request collection and owner tag");
+            try
+            {
+                foreach (var collection in FindOwnedCollections().SelectMany(g => g))
+                {
+                    DeleteCollection(collection, dryRun: false);
+                }
+
+                await SyncBlockedTagsAsync([], dryRun: false).ConfigureAwait(false);
+            }
+            catch
+            {
+                _uninstalling = false;
+                throw;
+            }
         }
         finally
         {
@@ -165,7 +206,7 @@ public sealed class CollectionReconciler : IDisposable
     private async Task AddMissingBlockedTagsAsync(Guid userId, bool dryRun)
     {
         var user = _userManager.GetUserById(userId);
-        if (user is null)
+        if (_uninstalling || user is null)
         {
             return;
         }

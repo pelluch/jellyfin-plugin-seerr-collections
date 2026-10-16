@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Jellyfin.Plugin.SeerrPlaylists.Configuration;
+using Jellyfin.Plugin.SeerrPlaylists.Sync;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
@@ -11,10 +12,13 @@ namespace Jellyfin.Plugin.SeerrPlaylists;
 
 public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 {
-    public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer)
+    private readonly CollectionReconciler _reconciler;
+
+    public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer, CollectionReconciler reconciler)
         : base(applicationPaths, xmlSerializer)
     {
         Instance = this;
+        _reconciler = reconciler;
     }
 
     public override string Name => "Seerr Playlists";
@@ -22,6 +26,12 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public override Guid Id => Guid.Parse("727ca564-1ccc-4dff-b104-ab3f2254418d");
 
     public static Plugin? Instance { get; private set; }
+
+    public override void OnUninstalling()
+    {
+        _reconciler.RemoveEverythingAsync().GetAwaiter().GetResult();
+        base.OnUninstalling();
+    }
 
     public IEnumerable<PluginPageInfo> GetPages()
     {
