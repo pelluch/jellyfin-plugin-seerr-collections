@@ -7,7 +7,7 @@ namespace Jellyfin.Plugin.SeerrPlaylists.Sync;
 public sealed class SyncScheduler : IDisposable
 {
     // Scans add many items at once, and provide IDs don't arrive immediately.
-    private static readonly TimeSpan _quietPeriod = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan _quietPeriod = TimeSpan.FromSeconds(60);
 
     private readonly Timer _timer;
 
