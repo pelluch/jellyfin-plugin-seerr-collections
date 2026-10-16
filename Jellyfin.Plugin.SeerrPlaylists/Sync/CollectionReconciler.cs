@@ -203,6 +203,7 @@ public sealed class CollectionReconciler : IDisposable
 
     private static bool HasOwnership(BoxSet collection, Guid userId, string collectionName)
         => collection.Name == collectionName
+            && collection.DisplayOrder == nameof(ItemSortBy.Default)
             && collection.Tags.Where(OwnerTag.IsOwnerTag).SequenceEqual([OwnerTag.For(userId)], StringComparer.OrdinalIgnoreCase)
             && collection.LockedFields.Contains(MetadataField.Name)
             && collection.LockedFields.Contains(MetadataField.Tags);
@@ -358,7 +359,7 @@ public sealed class CollectionReconciler : IDisposable
         if (!HasOwnership(collection, user.Id, collectionName))
         {
             _logger.LogInformation(
-                "{DryRun}Updating name, tag and locks of collection {Name} ({Id}) of user {UserId}",
+                "{DryRun}Updating name, tag, display order and locks of collection {Name} ({Id}) of user {UserId}",
                 DryRunPrefix(dryRun),
                 collection.Name,
                 collection.Id,
@@ -429,6 +430,7 @@ public sealed class CollectionReconciler : IDisposable
     private async Task TakeOwnershipAsync(BoxSet collection, Guid userId, string collectionName, CancellationToken cancellationToken)
     {
         collection.Name = collectionName;
+        collection.DisplayOrder = nameof(ItemSortBy.Default);
         collection.Tags = collection.Tags.Where(t => !OwnerTag.IsOwnerTag(t)).Append(OwnerTag.For(userId)).ToArray();
         collection.LockedFields = collection.LockedFields.Union([MetadataField.Name, MetadataField.Tags]).ToArray();
         await collection.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
