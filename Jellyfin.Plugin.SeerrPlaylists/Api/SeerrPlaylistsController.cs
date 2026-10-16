@@ -25,12 +25,18 @@ public class SeerrPlaylistsController : ControllerBase
     private readonly SeerrConnectionVerifier _verifier;
     private readonly CollectionReconciler _reconciler;
     private readonly SyncScheduler _scheduler;
+    private readonly CoverImage _coverImage;
 
-    public SeerrPlaylistsController(SeerrConnectionVerifier verifier, CollectionReconciler reconciler, SyncScheduler scheduler)
+    public SeerrPlaylistsController(
+        SeerrConnectionVerifier verifier,
+        CollectionReconciler reconciler,
+        SyncScheduler scheduler,
+        CoverImage coverImage)
     {
         _verifier = verifier;
         _reconciler = reconciler;
         _scheduler = scheduler;
+        _coverImage = coverImage;
     }
 
     [HttpPost("TestConnection")]
@@ -65,7 +71,7 @@ public class SeerrPlaylistsController : ControllerBase
     [HttpGet("CoverImage")]
     public ActionResult GetCoverImage()
     {
-        var cover = CoverImage.Find();
+        var cover = _coverImage.Find();
         return cover is null ? NotFound() : PhysicalFile(cover.FullName, MimeTypes.GetMimeType(cover.FullName));
     }
 

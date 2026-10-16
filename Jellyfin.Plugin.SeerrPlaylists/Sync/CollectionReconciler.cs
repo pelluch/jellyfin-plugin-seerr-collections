@@ -32,6 +32,7 @@ public sealed class CollectionReconciler : IDisposable
     private readonly ICollectionManager _collectionManager;
     private readonly IUserManager _userManager;
     private readonly IProviderManager _providerManager;
+    private readonly CoverImage _coverImage;
     private readonly ILogger<CollectionReconciler> _logger;
 
     private volatile bool _uninstalling;
@@ -41,12 +42,14 @@ public sealed class CollectionReconciler : IDisposable
         ICollectionManager collectionManager,
         IUserManager userManager,
         IProviderManager providerManager,
+        CoverImage coverImage,
         ILogger<CollectionReconciler> logger)
     {
         _libraryManager = libraryManager;
         _collectionManager = collectionManager;
         _userManager = userManager;
         _providerManager = providerManager;
+        _coverImage = coverImage;
         _logger = logger;
     }
 
@@ -165,7 +168,7 @@ public sealed class CollectionReconciler : IDisposable
         await _lock.WaitAsync().ConfigureAwait(false);
         try
         {
-            CoverImage.Save(image, extension);
+            _coverImage.Save(image, extension);
             _logger.LogInformation("Saved a new {Extension} cover image of {Length} bytes", extension, image.Length);
         }
         finally
@@ -179,7 +182,7 @@ public sealed class CollectionReconciler : IDisposable
         await _lock.WaitAsync().ConfigureAwait(false);
         try
         {
-            CoverImage.Delete();
+            _coverImage.Delete();
             _logger.LogInformation("Removed the cover image");
         }
         finally
@@ -199,7 +202,7 @@ public sealed class CollectionReconciler : IDisposable
         CancellationToken cancellationToken)
     {
         var desired = requests.Where(r => r.Items.Count > 0).ToDictionary(r => r.User.Id);
-        var cover = CoverImage.Find();
+        var cover = _coverImage.Find();
         var stopwatch = Stopwatch.StartNew();
         var owned = FindOwnedCollections();
         if (Plugin.VerboseLogging)
