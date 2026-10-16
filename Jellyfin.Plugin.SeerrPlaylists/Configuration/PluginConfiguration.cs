@@ -13,4 +13,6 @@ public class PluginConfiguration : BasePluginConfiguration
     public string CollectionName { get; set; } = DefaultCollectionName;
 
     public bool DryRun { get; set; } = true;
+
+    public bool VerboseLogging { get; set; }
 }

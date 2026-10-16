@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -84,7 +85,14 @@ public class SeerrClient
         {
             try
             {
-                return await GetOnceAsync<T>(uri, connection.ApiKey, cancellationToken).ConfigureAwait(false);
+                var stopwatch = Stopwatch.StartNew();
+                var result = await GetOnceAsync<T>(uri, connection.ApiKey, cancellationToken).ConfigureAwait(false);
+                if (Plugin.VerboseLogging)
+                {
+                    _logger.LogInformation("Seerr request {PathAndQuery} took {ElapsedMs} ms", uri.PathAndQuery, stopwatch.ElapsedMilliseconds);
+                }
+
+                return result;
             }
             catch (SeerrException e) when (e.IsTransient && attempt < MaxAttempts)
             {

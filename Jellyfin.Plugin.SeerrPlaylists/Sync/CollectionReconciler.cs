@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -144,7 +145,15 @@ public sealed class CollectionReconciler : IDisposable
         CancellationToken cancellationToken)
     {
         var desired = requests.Where(r => r.Items.Count > 0).ToDictionary(r => r.User.Id);
+        var stopwatch = Stopwatch.StartNew();
         var owned = FindOwnedCollections();
+        if (Plugin.VerboseLogging)
+        {
+            _logger.LogInformation(
+                "Found {Count} request collections in {ElapsedMs} ms",
+                owned.Sum(g => g.Count()),
+                stopwatch.ElapsedMilliseconds);
+        }
 
         // Blocking every tag before touching collections means no collection is ever visible to another user.
         if (!dryRun)
@@ -155,6 +164,7 @@ public sealed class CollectionReconciler : IDisposable
         foreach (var (userId, userRequests) in desired)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            stopwatch.Restart();
             var collection = owned[userId].FirstOrDefault();
             if (collection is null)
             {
@@ -168,6 +178,15 @@ public sealed class CollectionReconciler : IDisposable
             if (collection is not null)
             {
                 WarnIfHiddenFromOwner(collection, userRequests.User);
+            }
+
+            if (Plugin.VerboseLogging)
+            {
+                _logger.LogInformation(
+                    "Checked the collection of user {UserId} ({Count} items) in {ElapsedMs} ms",
+                    userId.ToString("N"),
+                    userRequests.Items.Count,
+                    stopwatch.ElapsedMilliseconds);
             }
         }
 
@@ -233,10 +252,10 @@ public sealed class CollectionReconciler : IDisposable
         }
 
         _logger.LogInformation(
-            "{DryRun}Blocking missing tags [{Tags}] for {User}",
+            "{DryRun}Blocking {Count} missing owner tags for user {UserId}",
             DryRunPrefix(dryRun),
-            string.Join(", ", missing),
-            user.Username);
+            missing.Count,
+            user.Id.ToString("N"));
         if (!dryRun)
         {
             policy.BlockedTags = [.. policy.BlockedTags, .. missing];
@@ -246,8 +265,11 @@ public sealed class CollectionReconciler : IDisposable
 
     private async Task SyncBlockedTagsAsync(IEnumerable<Guid> ownerIds, bool dryRun)
     {
+        var stopwatch = Stopwatch.StartNew();
         var owners = ownerIds.ToHashSet();
-        foreach (var user in _userManager.GetUsers().ToList())
+        var users = _userManager.GetUsers().ToList();
+        var updated = 0;
+        foreach (var user in users)
         {
             var policy = _userManager.GetUserDto(user).Policy;
             var wanted = owners.Where(owner => owner != user.Id).Select(OwnerTag.For).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -257,12 +279,13 @@ public sealed class CollectionReconciler : IDisposable
                 continue;
             }
 
+            updated++;
             _logger.LogInformation(
-                "{DryRun}Updating {User}'s blocked tags, adding [{Added}] and removing [{Removed}]",
+                "{DryRun}Updating blocked tags of user {UserId}, adding {Added} and removing {Removed}",
                 DryRunPrefix(dryRun),
-                user.Username,
-                string.Join(", ", wanted.Except(current, StringComparer.OrdinalIgnoreCase)),
-                string.Join(", ", current.Except(wanted, StringComparer.OrdinalIgnoreCase)));
+                user.Id.ToString("N"),
+                wanted.Except(current, StringComparer.OrdinalIgnoreCase).Count(),
+                current.Except(wanted, StringComparer.OrdinalIgnoreCase).Count());
             if (dryRun)
             {
                 continue;
@@ -270,6 +293,15 @@ public sealed class CollectionReconciler : IDisposable
 
             policy.BlockedTags = policy.BlockedTags.Where(t => !OwnerTag.IsOwnerTag(t)).Concat(wanted.Order(StringComparer.Ordinal)).ToArray();
             await UpdatePolicyAsync(user.Id, policy).ConfigureAwait(false);
+        }
+
+        if (Plugin.VerboseLogging)
+        {
+            _logger.LogInformation(
+                "Checked blocked tags of {UserCount} users in {ElapsedMs} ms, {UpdatedCount} needed changes",
+                users.Count,
+                stopwatch.ElapsedMilliseconds,
+                updated);
         }
     }
 
@@ -294,11 +326,10 @@ public sealed class CollectionReconciler : IDisposable
     {
         var (user, items) = userRequests;
         _logger.LogInformation(
-            "{DryRun}Creating {User}'s collection with {Count} items: {Items}",
+            "{DryRun}Creating the collection of user {UserId} with {Count} items",
             DryRunPrefix(dryRun),
-            user.Username,
-            items.Count,
-            Names(items));
+            user.Id.ToString("N"),
+            items.Count);
         if (dryRun)
         {
             return null;
@@ -327,11 +358,11 @@ public sealed class CollectionReconciler : IDisposable
         if (!HasOwnership(collection, user.Id, collectionName))
         {
             _logger.LogInformation(
-                "{DryRun}Updating name, tag and locks of {User}'s collection {Name} ({Id})",
+                "{DryRun}Updating name, tag and locks of collection {Name} ({Id}) of user {UserId}",
                 DryRunPrefix(dryRun),
-                user.Username,
                 collection.Name,
-                collection.Id);
+                collection.Id,
+                user.Id.ToString("N"));
             if (!dryRun)
             {
                 await TakeOwnershipAsync(collection, user.Id, collectionName, cancellationToken).ConfigureAwait(false);
@@ -344,12 +375,24 @@ public sealed class CollectionReconciler : IDisposable
 
         if (toAdd.Count > 0)
         {
-            _logger.LogInformation(
-                "{DryRun}Adding {Count} items to {User}'s collection: {Items}",
-                DryRunPrefix(dryRun),
-                toAdd.Count,
-                user.Username,
-                Names(toAdd));
+            if (Plugin.VerboseLogging)
+            {
+                _logger.LogInformation(
+                    "{DryRun}Adding {Count} items to the collection of user {UserId}: {Items}",
+                    DryRunPrefix(dryRun),
+                    toAdd.Count,
+                    user.Id.ToString("N"),
+                    Names(toAdd));
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "{DryRun}Adding {Count} items to the collection of user {UserId}",
+                    DryRunPrefix(dryRun),
+                    toAdd.Count,
+                    user.Id.ToString("N"));
+            }
+
             if (!dryRun)
             {
                 await _collectionManager.AddToCollectionAsync(collection.Id, toAdd.Select(i => i.Id)).ConfigureAwait(false);
@@ -358,12 +401,24 @@ public sealed class CollectionReconciler : IDisposable
 
         if (toRemove.Count > 0)
         {
-            _logger.LogInformation(
-                "{DryRun}Removing {Count} items from {User}'s collection: {Items}",
-                DryRunPrefix(dryRun),
-                toRemove.Count,
-                user.Username,
-                string.Join(", ", toRemove.Select(id => _libraryManager.GetItemById(id)?.Name ?? id.ToString("N"))));
+            if (Plugin.VerboseLogging)
+            {
+                _logger.LogInformation(
+                    "{DryRun}Removing {Count} items from the collection of user {UserId}: {Items}",
+                    DryRunPrefix(dryRun),
+                    toRemove.Count,
+                    user.Id.ToString("N"),
+                    string.Join(", ", toRemove.Select(id => _libraryManager.GetItemById(id)?.Name ?? id.ToString("N"))));
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "{DryRun}Removing {Count} items from the collection of user {UserId}",
+                    DryRunPrefix(dryRun),
+                    toRemove.Count,
+                    user.Id.ToString("N"));
+            }
+
             if (!dryRun)
             {
                 await _collectionManager.RemoveFromCollectionAsync(collection.Id, toRemove).ConfigureAwait(false);
@@ -384,16 +439,16 @@ public sealed class CollectionReconciler : IDisposable
         if (!_libraryManager.GetCollectionFolders(collection).Any(folder => folder.IsVisible(user)))
         {
             _logger.LogWarning(
-                "{User} cannot see their collection {Name}, because they have no access to the library that holds collections",
-                user.Username,
+                "User {UserId} cannot see their collection {Name}, because they have no access to the library that holds collections",
+                user.Id.ToString("N"),
                 collection.Name);
         }
 
         if (!collection.IsParentalAllowed(user, false))
         {
             _logger.LogWarning(
-                "{User} cannot see their collection {Name} because of their parental controls. Any allowed tags they have must include {Tag}",
-                user.Username,
+                "User {UserId} cannot see their collection {Name} because of their parental controls. Any allowed tags they have must include {Tag}",
+                user.Id.ToString("N"),
                 collection.Name,
                 OwnerTag.For(user.Id));
         }

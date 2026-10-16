@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using Jellyfin.Data.Enums;
@@ -42,9 +43,9 @@ public class RequestResolver
             if (user is null)
             {
                 _logger.LogDebug(
-                    "Skipping Seerr request {RequestId}: requester {SeerrUser} is not a Jellyfin user",
+                    "Skipping Seerr request {RequestId}: Seerr user {SeerrUserId} is not a Jellyfin user",
                     request.Id,
-                    request.RequestedBy?.DisplayName);
+                    request.RequestedBy?.Id);
                 continue;
             }
 
@@ -60,7 +61,9 @@ public class RequestResolver
         var result = new List<UserRequests>();
         foreach (var (user, userRequests) in requestsByUser.Values)
         {
+            var stopwatch = Stopwatch.StartNew();
             var visible = FindVisibleItems(user, userRequests);
+            var lookupMs = stopwatch.ElapsedMilliseconds;
             var items = new Dictionary<Guid, BaseItem>();
             foreach (var request in userRequests)
             {
@@ -68,15 +71,27 @@ public class RequestResolver
                 if (item is null)
                 {
                     _logger.LogDebug(
-                        "Skipping Seerr request {RequestId}: {User} can see no {Type} with TMDb id {TmdbId}",
+                        "Skipping Seerr request {RequestId}: user {UserId} can see no {Type} with TMDb id {TmdbId}",
                         request.Id,
-                        user.Username,
+                        user.Id.ToString("N"),
                         request.Type,
                         request.Media?.TmdbId);
                     continue;
                 }
 
                 items.TryAdd(item.Id, item);
+            }
+
+            if (Plugin.VerboseLogging)
+            {
+                _logger.LogInformation(
+                    "Matched {Matched} of {Requests} requests of user {UserId} in {ElapsedMs} ms ({LookupMs} ms looking up {Candidates} library items)",
+                    items.Count,
+                    userRequests.Count,
+                    user.Id.ToString("N"),
+                    stopwatch.ElapsedMilliseconds,
+                    lookupMs,
+                    visible.SelectMany(g => g).Distinct().Count());
             }
 
             if (items.Count > 0)
@@ -167,9 +182,9 @@ public class RequestResolver
             if (copies.Count > 1)
             {
                 _logger.LogDebug(
-                    "Seerr request {RequestId}: {User} can see {Count} copies of {Name}, using the oldest",
+                    "Seerr request {RequestId}: user {UserId} can see {Count} copies of {Name}, using the oldest",
                     request.Id,
-                    user.Username,
+                    user.Id.ToString("N"),
                     copies.Count,
                     copies[0].Name);
             }

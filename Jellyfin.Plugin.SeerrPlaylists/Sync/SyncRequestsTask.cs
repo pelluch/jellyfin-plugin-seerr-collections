@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Plugin.SeerrPlaylists.Configuration;
@@ -53,26 +53,22 @@ public class SyncRequestsTask : IScheduledTask
             return;
         }
 
+        var stopwatch = Stopwatch.StartNew();
         var connection = SeerrConnection.Create(configuration.SeerrUrl, configuration.SeerrApiKey);
         await _verifier.VerifyAsync(connection, cancellationToken).ConfigureAwait(false);
+        var verifyMs = stopwatch.ElapsedMilliseconds;
         progress.Report(10);
 
         var requests = await _client.GetRequestsAsync(connection, cancellationToken).ConfigureAwait(false);
+        var fetchMs = stopwatch.ElapsedMilliseconds - verifyMs;
         progress.Report(40);
 
         var userRequests = _resolver.Resolve(requests);
+        var matchMs = stopwatch.ElapsedMilliseconds - verifyMs - fetchMs;
         _logger.LogInformation(
             "Fetched {RequestCount} Seerr requests, {UserCount} users have requested items in the library",
             requests.Count,
             userRequests.Count);
-        foreach (var (user, items) in userRequests)
-        {
-            _logger.LogDebug(
-                "{User} requested {ItemCount} items in the library: {Items}",
-                user.Username,
-                items.Count,
-                string.Join(", ", items.Select(i => i.Name).Order(StringComparer.CurrentCulture)));
-        }
 
         WarnAboutGrouping();
 
@@ -81,6 +77,17 @@ public class SyncRequestsTask : IScheduledTask
             : configuration.CollectionName.Trim();
         await _reconciler.ReconcileAsync(userRequests, collectionName, configuration.DryRun, cancellationToken).ConfigureAwait(false);
         progress.Report(100);
+
+        if (Plugin.VerboseLogging)
+        {
+            _logger.LogInformation(
+                "Sync took {TotalMs} ms: checking Seerr {VerifyMs} ms, fetching requests {FetchMs} ms, matching {MatchMs} ms, collections and tags {ReconcileMs} ms",
+                stopwatch.ElapsedMilliseconds,
+                verifyMs,
+                fetchMs,
+                matchMs,
+                stopwatch.ElapsedMilliseconds - verifyMs - fetchMs - matchMs);
+        }
     }
 
     public IEnumerable<TaskTriggerInfo> GetDefaultTriggers()

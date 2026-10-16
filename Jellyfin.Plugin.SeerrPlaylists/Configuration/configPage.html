@@ -37,6 +37,13 @@
                         </label>
                         <div class="fieldDescription checkboxFieldDescription">Log what would change without touching collections or user settings.</div>
                     </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label">
+                            <input id="VerboseLogging" name="VerboseLogging" type="checkbox" is="emby-checkbox" />
+                            <span>Verbose logging</span>
+                        </label>
+                        <div class="fieldDescription checkboxFieldDescription">Log timings and extra detail for every sync, at the normal Information level.</div>
+                    </div>
                     <div>
                         <button is="emby-button" type="submit" class="raised button-submit block emby-button">
                             <span>Save</span>
@@ -58,6 +65,7 @@
                         document.querySelector('#SeerrApiKey').value = config.SeerrApiKey;
                         document.querySelector('#CollectionName').value = config.CollectionName;
                         document.querySelector('#DryRun').checked = config.DryRun;
+                        document.querySelector('#VerboseLogging').checked = config.VerboseLogging;
                         Dashboard.hideLoadingMsg();
                     });
                 });
@@ -103,6 +111,7 @@
                     config.SeerrApiKey = document.querySelector('#SeerrApiKey').value.trim();
                     config.CollectionName = document.querySelector('#CollectionName').value.trim();
                     config.DryRun = document.querySelector('#DryRun').checked;
+                    config.VerboseLogging = document.querySelector('#VerboseLogging').checked;
                     ApiClient.updatePluginConfiguration(SeerrPlaylistsConfig.pluginUniqueId, config).then(function (result) {
                         Dashboard.processPluginConfigurationUpdateResult(result);
                     });

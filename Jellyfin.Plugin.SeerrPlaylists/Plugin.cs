@@ -27,6 +27,8 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
     public static Plugin? Instance { get; private set; }
 
+    public static bool VerboseLogging => Instance?.Configuration.VerboseLogging == true;
+
     public override void OnUninstalling()
     {
         _reconciler.RemoveEverythingAsync().GetAwaiter().GetResult();
