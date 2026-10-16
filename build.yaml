@@ -1,7 +1,7 @@
 ---
 name: "Seerr Playlists"
 guid: "727ca564-1ccc-4dff-b104-ab3f2254418d"
-version: "1.0.0.0"
+version: "0.1.0.0"
 targetAbi: "12.0.0.0"
 framework: "net10.0"
 overview: "Per-user collections of the items each user requested on Seerr"
