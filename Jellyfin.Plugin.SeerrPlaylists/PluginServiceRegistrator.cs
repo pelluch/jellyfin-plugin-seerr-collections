@@ -1,6 +1,8 @@
+using Jellyfin.Data.Events.Users;
 using Jellyfin.Plugin.SeerrPlaylists.Seerr;
 using Jellyfin.Plugin.SeerrPlaylists.Sync;
 using MediaBrowser.Controller;
+using MediaBrowser.Controller.Events;
 using MediaBrowser.Controller.Plugins;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -15,5 +17,8 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<RequestResolver>();
         serviceCollection.AddSingleton<CollectionReconciler>();
         serviceCollection.AddHostedService<LibraryChangeTrigger>();
+        serviceCollection.AddScoped<IEventConsumer<UserCreatedEventArgs>, UserEventConsumer>();
+        serviceCollection.AddScoped<IEventConsumer<UserUpdatedEventArgs>, UserEventConsumer>();
+        serviceCollection.AddScoped<IEventConsumer<UserDeletedEventArgs>, UserEventConsumer>();
     }
 }

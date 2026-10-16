@@ -14,8 +14,9 @@ using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.SeerrPlaylists.Sync;
 
-public class CollectionReconciler
+public sealed class CollectionReconciler : IDisposable
 {
+    private readonly SemaphoreSlim _lock = new(1, 1);
     private readonly ILibraryManager _libraryManager;
     private readonly ICollectionManager _collectionManager;
     private readonly IUserManager _userManager;
@@ -34,6 +35,62 @@ public class CollectionReconciler
     }
 
     public async Task ReconcileAsync(
+        IReadOnlyList<UserRequests> requests,
+        string collectionName,
+        bool dryRun,
+        CancellationToken cancellationToken)
+    {
+        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ReconcileLockedAsync(requests, collectionName, dryRun, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public async Task ProtectNewUserAsync(Guid userId, bool dryRun)
+    {
+        await _lock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await AddMissingBlockedTagsAsync(userId, dryRun).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    // On 12.1+ this runs inside the policy updates ReconcileAsync makes while holding the lock
+    public Task RestoreBlockedTagsAsync(Guid userId, bool dryRun) => AddMissingBlockedTagsAsync(userId, dryRun);
+
+    public async Task RemoveOwnerAsync(Guid userId, bool dryRun)
+    {
+        await _lock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var owned = FindOwnedCollections();
+            foreach (var collection in owned[userId])
+            {
+                DeleteCollection(collection, dryRun);
+            }
+
+            await SyncBlockedTagsAsync(owned.Select(g => g.Key).Where(owner => owner != userId), dryRun).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+    }
+
+    public void Dispose() => _lock.Dispose();
+
+    private static string DryRunPrefix(bool dryRun) => dryRun ? "Dry run: " : string.Empty;
+
+    private async Task ReconcileLockedAsync(
         IReadOnlyList<UserRequests> requests,
         string collectionName,
         bool dryRun,
@@ -68,18 +125,12 @@ public class CollectionReconciler
         {
             foreach (var collection in group.Skip(desired.ContainsKey(group.Key) ? 1 : 0))
             {
-                _logger.LogInformation("{DryRun}Deleting collection {Name} ({Id})", DryRunPrefix(dryRun), collection.Name, collection.Id);
-                if (!dryRun)
-                {
-                    _libraryManager.DeleteItem(collection, new DeleteOptions { DeleteFileLocation = true });
-                }
+                DeleteCollection(collection, dryRun);
             }
         }
 
         await SyncBlockedTagsAsync(desired.Keys, dryRun).ConfigureAwait(false);
     }
-
-    private static string DryRunPrefix(bool dryRun) => dryRun ? "Dry run: " : string.Empty;
 
     private static bool HasOwnership(BoxSet collection, Guid userId, string collectionName)
         => collection.Name == collectionName
@@ -101,6 +152,47 @@ public class CollectionReconciler
             .Where(c => c.Owner.HasValue)
             .OrderBy(c => c.Collection.DateCreated)
             .ToLookup(c => c.Owner!.Value, c => c.Collection);
+
+    private void DeleteCollection(BoxSet collection, bool dryRun)
+    {
+        _logger.LogInformation("{DryRun}Deleting collection {Name} ({Id})", DryRunPrefix(dryRun), collection.Name, collection.Id);
+        if (!dryRun)
+        {
+            _libraryManager.DeleteItem(collection, new DeleteOptions { DeleteFileLocation = true });
+        }
+    }
+
+    private async Task AddMissingBlockedTagsAsync(Guid userId, bool dryRun)
+    {
+        var user = _userManager.GetUserById(userId);
+        if (user is null)
+        {
+            return;
+        }
+
+        var policy = _userManager.GetUserDto(user).Policy;
+        var missing = FindOwnedCollections()
+            .Select(g => g.Key)
+            .Where(owner => owner != userId)
+            .Select(OwnerTag.For)
+            .Except(policy.BlockedTags, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (missing.Count == 0)
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "{DryRun}Blocking missing tags [{Tags}] for {User}",
+            DryRunPrefix(dryRun),
+            string.Join(", ", missing),
+            user.Username);
+        if (!dryRun)
+        {
+            policy.BlockedTags = [.. policy.BlockedTags, .. missing];
+            await _userManager.UpdatePolicyAsync(user.Id, policy).ConfigureAwait(false);
+        }
+    }
 
     private async Task SyncBlockedTagsAsync(IEnumerable<Guid> ownerIds, bool dryRun)
     {
